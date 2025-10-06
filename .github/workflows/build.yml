@@ -30,7 +30,7 @@ jobs:
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-librevenge
             mingw-w64-x86_64-libvisio
-            mingw-w64-x86_64-ntldd   # for dependency scan
+            mingw-w64-x86_64-ntldd
 
       - name: Build libemf2svg (dep)
         run: |
@@ -52,21 +52,18 @@ jobs:
       - name: Stage runtime files
         run: |
           mkdir -p stage/bin stage/etc/fonts stage/share/fonts
-          # Binaries
+
           cp /mingw64/bin/vsd2svg-conv.exe stage/bin/
           cp /mingw64/bin/vss2svg-conv.exe stage/bin/
 
-          # Copy required DLLs beside EXEs (scan one; repeat for both if needed)
           ntldd -R stage/bin/vsd2svg-conv.exe | awk '/mingw64/ {print $3}' | sort -u | xargs -I{} cp -v {} stage/bin/
 
-          # Minimal fontconfig setup (fontconfig expects config + fonts)
-          # Copy default config and point FONTCONFIG_PATH there at runtime.
           mkdir -p stage/etc/fonts/conf.d
           cp -r /mingw64/etc/fonts/fonts.conf stage/etc/fonts/
-          # A small font set for sane defaults (DejaVu)
+
           cp -r /mingw64/share/fonts/TTF/DejaVu* stage/share/fonts/ || true
 
-          # Tiny launcher to set env and call vsd2svg-conv
+
           cat > stage/run_vsd2svg.cmd <<'EOF'
           @echo off
           setlocal
@@ -94,7 +91,6 @@ jobs:
       - name: Make single-file SFX (7-Zip)
         shell: pwsh
         run: |
-          # Build a 7z archive of 'stage' and wrap it with 7z SFX stub to one .exe
           $ErrorActionPreference = "Stop"
           $sfx = "C:\Program Files\7-Zip\7z.sfx"
           $cfg = @"
@@ -110,7 +106,6 @@ jobs:
           Get-Content .\config.txt -Encoding Byte, ReadCount 0 | Add-Content vsd2svg-onefile.exe -Encoding Byte
           Get-Content .\stage.7z -Encoding Byte, ReadCount 0 | Add-Content vsd2svg-onefile.exe -Encoding Byte
 
-          # Duplicate for the VSS tool if you want a separate entry point
           $cfg2 = @"
           ;!@Install@!UTF-8!
           RunProgram="run_vss2svg.cmd"
