@@ -34,7 +34,21 @@ jobs:
 
       - name: Build libemf2svg (dep)
         run: |
-          git -c core.symlinks=true clone --depth=1 https://github.com/kakwa/libemf2svg
+          set -euo pipefail
+          git -c core.symlinks=false clone --depth=1 https://github.com/kakwa/libemf2svg
+
+          cd libemf2svg
+
+          while IFS= read -r path; do
+            dir="$(dirname "$path")"
+            base="$(basename "$path")"
+            target="$(head -n1 "$path")"   # e.g. ../deps/libUEMF/uemf.h or ../deps/libUEMF
+            mkdir -p "$dir"
+            ( cd "$dir" && rm -rf "$base" && cp -a "$target" "$base" )
+          done < <(git ls-files -s | awk '$1 ~ /^120000/ {print $4}')
+
+          cd ..
+
           cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
             -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
