@@ -51,17 +51,16 @@ jobs:
           set -e
           git clone --depth=1 https://github.com/metanorma/libemf2svg
 
-          # Prefer import libraries (*.dll.a) over static (*.a)
+          printf '\n# --- BEGIN local patch: link iconv on MinGW ---\n' >> libemf2svg/CMakeLists.txt
+          printf 'find_package(Iconv)\n' >> libemf2svg/CMakeLists.txt
+          printf 'if(Iconv_FOUND)\n  target_link_libraries(emf2svg PRIVATE Iconv::Iconv)\nelse()\n  target_link_libraries(emf2svg PRIVATE iconv)\nendif()\n' >> libemf2svg/CMakeLists.txt
+          printf '# --- END local patch ---\n' >> libemf2svg/CMakeLists.txt
+
           export CMAKE_FIND_LIBRARY_SUFFIXES=".dll.a;.a"
-          # Ensure nested CMake projects use sane policies
           export CMAKE_POLICY_VERSION_MINIMUM=3.10
-          # Help CMake find headers/libs cleanly in MSYS2
           export CMAKE_PREFIX_PATH=/mingw64
           export CMAKE_INCLUDE_PATH="/mingw64/include:/mingw64/include/libxml2"
           export CMAKE_LIBRARY_PATH="/mingw64/lib"
-
-          # Link against iconv explicitly (libUEMF uses it)
-          export LDFLAGS="-liconv"
 
           cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -69,11 +68,11 @@ jobs:
             -DLONLY=on \
             -DLibXml2_ROOT=/mingw64 \
             -DLibXml2_INCLUDE_DIR=/mingw64/include/libxml2 \
-            -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a \
-            -DCMAKE_SHARED_LINKER_FLAGS="-liconv" \
-            -DCMAKE_EXE_LINKER_FLAGS="-liconv"
+            -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a
+
           cmake --build libemf2svg/build -- -j
           cmake --install libemf2svg/build
+
 
       - name: Configure & build libvisio2svg
         run: |
