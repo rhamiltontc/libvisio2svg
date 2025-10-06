@@ -2,30 +2,28 @@ name: windows-msys2
 
 on:
   push:
-    branches: ["**"]
   pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-      - name: Set up MSYS2
+      - name: Set up MSYS2 (MINGW64)
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
-          install: >
+          install: >-
             git
             make
             cmake
+            gawk
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-pkg-config
             mingw-w64-x86_64-libxml2
@@ -36,129 +34,126 @@ jobs:
             mingw-w64-x86_64-zlib
             mingw-w64-x86_64-librevenge
             mingw-w64-x86_64-libvisio
-            mingw-w64-x86_64-ntldd
-            gawk
             mingw-w64-x86_64-libiconv
             mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-brotli
             mingw-w64-x86_64-bzip2
             mingw-w64-x86_64-expat
             mingw-w64-x86_64-gettext
+            mingw-w64-x86_64-ntldd
 
-      # Build libemf2svg from the Windows-friendly fork; prefer *.dll.a and link iconv
-      - name: Build libemf2svg (dep)
-        run: |
-          set -e
-          git clone --depth=1 https://github.com/metanorma/libemf2svg
-
-          {
-            echo ''
-            echo '# --- BEGIN local patch: link iconv on MinGW (plain signature) ---'
-            echo 'find_package(Iconv)'
-            echo 'if(Iconv_FOUND)'
-            echo '  # Upstream used the plain form earlier; keep it consistent:'
-            echo '  target_link_libraries(emf2svg ${Iconv_LIBRARIES})'
-            echo 'else()'
-            echo '  target_link_libraries(emf2svg iconv)'
-            echo 'endif()'
-            echo '# --- END local patch ---'
-          } >> libemf2svg/CMakeLists.txt
-
-          export CMAKE_FIND_LIBRARY_SUFFIXES=".dll.a;.a"
-          export CMAKE_POLICY_VERSION_MINIMUM=3.10
-          export CMAKE_PREFIX_PATH=/mingw64
-          export CMAKE_INCLUDE_PATH="/mingw64/include:/mingw64/include/libxml2"
-          export CMAKE_LIBRARY_PATH="/mingw64/lib"
-
-          cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/mingw64 \
-            -DLONLY=on \
-            -DLibXml2_ROOT=/mingw64 \
-            -DLibXml2_INCLUDE_DIR=/mingw64/include/libxml2 \
-            -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a
-
-          cmake --build libemf2svg/build -- -j
-          cmake --install libemf2svg/build
-
-      - name: Patch open_memstream for Windows (CI-only)
-        if: runner.os == 'Windows'
+      - name: Build libemf2svg (shared)
         shell: msys2 {0}
         run: |
           set -euo pipefail
-          FILE=src/lib/visio2svg/Visio2Svg.cpp
+          git -c core.symlinks=true clone --depth=1 https://github.com/kakwa/libemf2svg
+          cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON
+          cmake --build libemf2svg/build --config Release -- -j
+          cmake --install libemf2svg/build
 
-          awk '{
-            print $0
-            if ($0 ~ /#include[[:space:]]*["<]visio2svg\/Visio2Svg\.h[">]/ && !inserted++) {
-              print "#ifdef _WIN32"
-              print "#include <cstdio>"
-              print "#include <cstdlib>"
-              print "static FILE* open_memstream_win(char** /*out*/, size_t* /*out_length*/) { return std::tmpfile(); }"
-              print "static int finalize_memstream_win(FILE* f, char** out, size_t* out_length) {"
-              print "  if (!f) return -1;"
-              print "  std::fflush(f);"
-              print "  long len = std::ftell(f);"
-              print "  if (len < 0) { std::fclose(f); return -1; }"
-              print "  *out_length = static_cast<size_t>(len);"
-              print "  *out = static_cast<char*>(std::malloc(*out_length + 1));"
-              print "  if (!*out) { std::fclose(f); return -1; }"
-              print "  std::rewind(f);"
-              print "  size_t n = std::fread(*out, 1, *out_length, f);"
-              print "  (*out)[n] = '\\0';"
-              print "  return std::fclose(f);"
-              print "}"
-              print "#endif"
-            }
-          }' "$FILE" > "$FILE.new" && mv "$FILE.new" "$FILE"
+      - name: Patch open_memstream for Windows (CI-only)
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          f=src/lib/visio2svg/Visio2Svg.cpp
 
-          sed -i 's/out_f = open_memstream(out, out_length);/#ifndef _WIN32\
-          out_f = open_memstream(out, out_length);\
-          #else\
-              out_f = open_memstream_win(out, out_length);\
-          #endif/' "$FILE"
+          # Inject tiny shim (only once) right after the main header include.
+          if ! grep -q 'open_memstream_win' "$f"; then
+            awk '{
+              print $0
+              if ($0 ~ /#include[[:space:]]*["<]visio2svg\/Visio2Svg\.h[">]/ && !i++) {
+                print "#ifdef _WIN32"
+                print "#include <cstdio>"
+                print "#include <cstdlib>"
+                print "static FILE* open_memstream_win(char** /*out*/, size_t* /*out_length*/) { return std::tmpfile(); }"
+                print "static int finalize_memstream_win(FILE* f, char** out, size_t* out_length) {"
+                print "  if (!f) return -1;"
+                print "  std::fflush(f);"
+                print "  long len = std::ftell(f);"
+                print "  if (len < 0) { std::fclose(f); return -1; }"
+                print "  *out_length = static_cast<size_t>(len);"
+                print "  *out = static_cast<char*>(std::malloc(*out_length + 1));"
+                print "  if (!*out) { std::fclose(f); return -1; }"
+                print "  std::rewind(f);"
+                print "  size_t n = std::fread(*out, 1, *out_length, f);"
+                print "  (*out)[n] = 0;"
+                print "  return std::fclose(f);"
+                print "}"
+                print "#endif"
+              }
+            }' "$f" > "$f.new" && mv "$f.new" "$f"
 
-              sed -i 's/fclose(out_f);/#ifndef _WIN32\
-              std::fflush(out_f);\
-              std::fclose(out_f);\
-          #else\
-              if (finalize_memstream_win(out_f, out, out_length) != 0)\
-                  return -1;\
-          #endif/' "$FILE"
+            # Swap the open_memstream() call to our shim on Windows
+            sed -i 's/out_f = open_memstream(out, out_length);/#ifndef _WIN32\
+                out_f = open_memstream(out, out_length);\
+            #else\
+                out_f = open_memstream_win(out, out_length);\
+            #endif/' "$f"
 
+            # Ensure fclose() finalizes and copies the data on Windows
+            sed -i 's/fclose(out_f);/#ifndef _WIN32\
+                std::fflush(out_f);\
+                std::fclose(out_f);\
+            #else\
+                if (finalize_memstream_win(out_f, out, out_length) != 0) return -1;\
+            #endif/' "$f"
+          fi
 
-      - name: Configure & build libvisio2svg
+          # Safety: if any previous run injected a weird terminator, normalize it.
+          sed -i 's/\(\*out\)\[n\] = .*/(*out)[n] = 0;/' "$f"
+
+      - name: Configure
+        shell: msys2 {0}
         run: |
           set -e
-          export CMAKE_FIND_LIBRARY_SUFFIXES=".dll.a;.a"
-          export CMAKE_POLICY_VERSION_MINIMUM=3.10
-          export CMAKE_PREFIX_PATH=/mingw64
-          export CMAKE_INCLUDE_PATH="/mingw64/include:/mingw64/include/libxml2"
-          export CMAKE_LIBRARY_PATH="/mingw64/lib"
-          export LDFLAGS="-liconv"
+          cmake -S . -B build -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release
 
-          cmake -S . -B build -G "Unix Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX=/mingw64 \
-            -DLibXml2_ROOT=/mingw64 \
-            -DLibXml2_INCLUDE_DIR=/mingw64/include/libxml2 \
-            -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a \
-            -DCMAKE_SHARED_LINKER_FLAGS="-liconv" \
-            -DCMAKE_EXE_LINKER_FLAGS="-liconv"
-          cmake --build build -- -j
-          cmake --install build
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          set -e
+          cmake --build build --config Release -- -j
 
-      - name: Bundle portable artifacts (EXEs + DLLs)
+      - name: Package exe(s) + runtime DLLs
+        if: always()
+        shell: msys2 {0}
         run: |
           set -e
           mkdir -p dist
-          for exe in /mingw64/bin/vsd2svg-conv.exe /mingw64/bin/vss2svg-conv.exe; do
-            cp "$exe" dist/
-            ntldd -R "$exe" | gawk '/mingw64/ {print $3}' | sort -u | xargs -r -I{} cp {} dist/
+          # grab all produced .exe
+          find build -iname "*.exe" -exec cp {} dist/ \; || true
+          # bundle needed DLLs so it runs on a clean Windows box
+          for dll in \
+            /mingw64/bin/libxml2-*.dll \
+            /mingw64/bin/zlib1.dll \
+            /mingw64/bin/libpng16-*.dll \
+            /mingw64/bin/libfreetype-*.dll \
+            /mingw64/bin/libfontconfig-*.dll \
+            /mingw64/bin/libemf2svg-*.dll \
+            /mingw64/bin/libwmf-*.dll \
+            /mingw64/bin/libwmflite-*.dll \
+            /mingw64/bin/librevenge-0.0-*.dll \
+            /mingw64/bin/librevenge-stream-0.0-*.dll \
+            /mingw64/bin/libvisio-0.1-*.dll \
+            /mingw64/bin/libiconv-*.dll \
+            /mingw64/bin/libharfbuzz-*.dll \
+            /mingw64/bin/libbrotlicommon-*.dll \
+            /mingw64/bin/libbrotlidec-*.dll \
+            /mingw64/bin/libbz2-*.dll \
+            /mingw64/bin/libexpat-*.dll \
+            /mingw64/bin/libintl-*.dll \
+            /mingw64/bin/libgcc_s_seh-*.dll \
+            /mingw64/bin/libstdc++-*.dll \
+            ; do
+            [ -f "$dll" ] && cp "$dll" dist/ || true
           done
+          echo "Packaged files:"
+          ls -al dist || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: libvisio2svg-windows-portable
+          name: libvisio2svg-windows
           path: dist/**
