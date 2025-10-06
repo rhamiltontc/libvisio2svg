@@ -37,17 +37,20 @@ jobs:
           git clone --depth=1 https://github.com/kakwa/libemf2svg
           cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build libemf2svg/build --config Release -- -j
           cmake --install libemf2svg/build
 
-      - name: Build libvisio2svg
+      - name: Configure & build libvisio2svg
         run: |
           cmake -S . -B build -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build build --config Release -- -j
           cmake --install build
+
 
       - name: Stage runtime files
         run: |
