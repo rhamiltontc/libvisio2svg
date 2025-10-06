@@ -81,6 +81,50 @@ jobs:
           cmake --build libemf2svg/build -- -j
           cmake --install libemf2svg/build
 
+      - name: Patch open_memstream for Windows (CI-only)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          FILE=src/lib/visio2svg/Visio2Svg.cpp
+
+          awk '{
+            print $0
+            if ($0 ~ /#include[[:space:]]*["<]visio2svg\/Visio2Svg\.h[">]/ && !inserted++) {
+              print "#ifdef _WIN32"
+              print "#include <cstdio>"
+              print "#include <cstdlib>"
+              print "static FILE* open_memstream_win(char** /*out*/, size_t* /*out_length*/) { return std::tmpfile(); }"
+              print "static int finalize_memstream_win(FILE* f, char** out, size_t* out_length) {"
+              print "  if (!f) return -1;"
+              print "  std::fflush(f);"
+              print "  long len = std::ftell(f);"
+              print "  if (len < 0) { std::fclose(f); return -1; }"
+              print "  *out_length = static_cast<size_t>(len);"
+              print "  *out = static_cast<char*>(std::malloc(*out_length + 1));"
+              print "  if (!*out) { std::fclose(f); return -1; }"
+              print "  std::rewind(f);"
+              print "  size_t n = std::fread(*out, 1, *out_length, f);"
+              print "  (*out)[n] = '\\0';"
+              print "  return std::fclose(f);"
+              print "}"
+              print "#endif"
+            }
+          }' "$FILE" > "$FILE.new" && mv "$FILE.new" "$FILE"
+
+          sed -i 's/out_f = open_memstream(out, out_length);/#ifndef _WIN32\
+          out_f = open_memstream(out, out_length);\
+          #else\
+              out_f = open_memstream_win(out, out_length);\
+          #endif/' "$FILE"
+
+              sed -i 's/fclose(out_f);/#ifndef _WIN32\
+              std::fflush(out_f);\
+              std::fclose(out_f);\
+          #else\
+              if (finalize_memstream_win(out_f, out, out_length) != 0)\
+                  return -1;\
+          #endif/' "$FILE"
 
 
       - name: Configure & build libvisio2svg
