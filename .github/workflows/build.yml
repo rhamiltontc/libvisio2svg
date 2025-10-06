@@ -39,12 +39,14 @@ jobs:
             mingw-w64-x86_64-ntldd
             gawk
 
-      # Build libemf2svg from the Windows-friendly fork (and pin LibXML2 paths)
+      # Build libemf2svg from the Windows-friendly fork; ensure nested CMake uses modern policies
       - name: Build libemf2svg (dep)
         run: |
           set -e
           git clone --depth=1 https://github.com/metanorma/libemf2svg
-          # Force POSIX-style include/lib hints so CMake doesn't prepend the source dir
+          # Make sure ALL nested CMake invocations (e.g., fm) get a sane policy floor
+          export CMAKE_POLICY_VERSION_MINIMUM=3.10
+          # Also help CMake find LibXML2 cleanly in MSYS2
           export CMAKE_PREFIX_PATH=/mingw64
           export CMAKE_INCLUDE_PATH="/mingw64/include:/mingw64/include/libxml2"
           export CMAKE_LIBRARY_PATH="/mingw64/lib"
@@ -55,14 +57,15 @@ jobs:
             -DLibXml2_ROOT=/mingw64 \
             -DLibXml2_INCLUDE_DIR=/mingw64/include/libxml2 \
             -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.10 \
             -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
+          # Keep the env var for ExternalProject configure steps (like 'fm')
           cmake --build libemf2svg/build -- -j
           cmake --install libemf2svg/build
 
       - name: Configure & build libvisio2svg
         run: |
           set -e
+          export CMAKE_POLICY_VERSION_MINIMUM=3.10
           export CMAKE_PREFIX_PATH=/mingw64
           export CMAKE_INCLUDE_PATH="/mingw64/include:/mingw64/include/libxml2"
           export CMAKE_LIBRARY_PATH="/mingw64/lib"
@@ -72,7 +75,6 @@ jobs:
             -DLibXml2_ROOT=/mingw64 \
             -DLibXml2_INCLUDE_DIR=/mingw64/include/libxml2 \
             -DLibXml2_LIBRARY=/mingw64/lib/libxml2.dll.a \
-            -DCMAKE_POLICY_VERSION_MINIMUM=3.10 \
             -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
           cmake --build build -- -j
           cmake --install build
