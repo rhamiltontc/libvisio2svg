@@ -1,0 +1,132 @@
+name: build
+on:
+  push: { branches: ["**"] }
+  pull_request: {}
+
+jobs:
+  windows-msys2-onefile:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >
+            git
+            make
+            cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-libxml2
+            mingw-w64-x86_64-libwmf
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-librevenge
+            mingw-w64-x86_64-libvisio
+            mingw-w64-x86_64-ntldd   # for dependency scan
+
+      - name: Build libemf2svg (dep)
+        run: |
+          git clone --depth=1 https://github.com/kakwa/libemf2svg
+          cmake -S libemf2svg -B libemf2svg/build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build libemf2svg/build --config Release -- -j
+          cmake --install libemf2svg/build
+
+      - name: Build libvisio2svg
+        run: |
+          cmake -S . -B build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/mingw64 \
+            -DCMAKE_CXX_FLAGS="-static-libgcc -static-libstdc++"
+          cmake --build build --config Release -- -j
+          cmake --install build
+
+      - name: Stage runtime files
+        run: |
+          mkdir -p stage/bin stage/etc/fonts stage/share/fonts
+          # Binaries
+          cp /mingw64/bin/vsd2svg-conv.exe stage/bin/
+          cp /mingw64/bin/vss2svg-conv.exe stage/bin/
+
+          # Copy required DLLs beside EXEs (scan one; repeat for both if needed)
+          ntldd -R stage/bin/vsd2svg-conv.exe | awk '/mingw64/ {print $3}' | sort -u | xargs -I{} cp -v {} stage/bin/
+
+          # Minimal fontconfig setup (fontconfig expects config + fonts)
+          # Copy default config and point FONTCONFIG_PATH there at runtime.
+          mkdir -p stage/etc/fonts/conf.d
+          cp -r /mingw64/etc/fonts/fonts.conf stage/etc/fonts/
+          # A small font set for sane defaults (DejaVu)
+          cp -r /mingw64/share/fonts/TTF/DejaVu* stage/share/fonts/ || true
+
+          # Tiny launcher to set env and call vsd2svg-conv
+          cat > stage/run_vsd2svg.cmd <<'EOF'
+          @echo off
+          setlocal
+          set "HERE=%~dp0"
+          set "FONTCONFIG_PATH=%HERE%etc\fonts"
+          set "FONTCONFIG_FILE=%HERE%etc\fonts\fonts.conf"
+          set "FONTCONFIG_SYSROOT=%HERE%"
+          set "PATH=%HERE%bin;%PATH%"
+          "%HERE%bin\vsd2svg-conv.exe" %*
+          endlocal
+          EOF
+
+          cat > stage/run_vss2svg.cmd <<'EOF'
+          @echo off
+          setlocal
+          set "HERE=%~dp0"
+          set "FONTCONFIG_PATH=%HERE%etc\fonts"
+          set "FONTCONFIG_FILE=%HERE%etc\fonts\fonts.conf"
+          set "FONTCONFIG_SYSROOT=%HERE%"
+          set "PATH=%HERE%bin;%PATH%"
+          "%HERE%bin\vss2svg-conv.exe" %*
+          endlocal
+          EOF
+
+      - name: Make single-file SFX (7-Zip)
+        shell: pwsh
+        run: |
+          # Build a 7z archive of 'stage' and wrap it with 7z SFX stub to one .exe
+          $ErrorActionPreference = "Stop"
+          $sfx = "C:\Program Files\7-Zip\7z.sfx"
+          $cfg = @"
+          ;!@Install@!UTF-8!
+          RunProgram="run_vsd2svg.cmd"
+          GUIMode="2"
+          ;!@InstallEnd@!
+          "@
+          Set-Content -Encoding UTF8 .\config.txt $cfg
+
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z stage.7z .\stage\* | Out-Null
+          Get-Content $sfx -Encoding Byte, ReadCount 0 | Set-Content vsd2svg-onefile.exe -Encoding Byte
+          Get-Content .\config.txt -Encoding Byte, ReadCount 0 | Add-Content vsd2svg-onefile.exe -Encoding Byte
+          Get-Content .\stage.7z -Encoding Byte, ReadCount 0 | Add-Content vsd2svg-onefile.exe -Encoding Byte
+
+          # Duplicate for the VSS tool if you want a separate entry point
+          $cfg2 = @"
+          ;!@Install@!UTF-8!
+          RunProgram="run_vss2svg.cmd"
+          GUIMode="2"
+          ;!@InstallEnd@!
+          "@
+          Set-Content -Encoding UTF8 .\config_vss.txt $cfg2
+          Copy-Item "C:\Program Files\7-Zip\7z.sfx" .\tmp.sfx
+          & "C:\Program Files\7-Zip\7z.exe" a -t7z stage.7z .\stage\* | Out-Null
+          Get-Content .\tmp.sfx -Encoding Byte, ReadCount 0 | Set-Content vss2svg-onefile.exe -Encoding Byte
+          Get-Content .\config_vss.txt -Encoding Byte, ReadCount 0 | Add-Content vss2svg-onefile.exe -Encoding Byte
+          Get-Content .\stage.7z -Encoding Byte, ReadCount 0 | Add-Content vss2svg-onefile.exe -Encoding Byte
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvisio2svg-windows-onefile
+          path: |
+            vsd2svg-onefile.exe
+            vss2svg-onefile.exe
