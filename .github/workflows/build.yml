@@ -38,7 +38,6 @@ jobs:
             mingw-w64-x86_64-libvisio
             mingw-w64-x86_64-ntldd
             gawk
-            # extra DLL deps we were missing at link time:
             mingw-w64-x86_64-libiconv
             mingw-w64-x86_64-harfbuzz
             mingw-w64-x86_64-brotli
